@@ -42,7 +42,7 @@ class TransactionManager {
    */
   TransactionThreadContext *RegisterWorker(worker_id_t worker_id) {
     // TODO(Tianyu): Implement
-    TransactionThreadContext *worker_context = new TransactionThreadContext(worker_id);
+    auto *worker_context = new TransactionThreadContext(worker_id);
 
     common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
     const auto ret UNUSED_ATTRIBUTE = curr_workers_.insert(worker_context);
@@ -60,7 +60,7 @@ class TransactionManager {
   void UnregisterWorker(TransactionThreadContext *thread) {
     // TODO(Tianyu): Implement
     common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
-    thread->MergeCompletedTransactions(completed_txns_);
+    thread->MergeCompletedTransactions(&completed_txns_);
     const size_t ret UNUSED_ATTRIBUTE = curr_workers_.erase(thread);
     TERRIER_ASSERT(ret == 1, "Unregistered thread does not exist in global thread table.");
     delete thread;

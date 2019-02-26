@@ -209,7 +209,7 @@ TransactionQueue TransactionManager::CompletedTransactionsForGC() {
 
     // for txns that supports thread context
     for (auto worker : curr_workers_) {
-      worker->MergeCompletedTransactions(hand_to_gc);
+      worker->MergeCompletedTransactions(&hand_to_gc);
     }
   }
   return hand_to_gc;
