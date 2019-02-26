@@ -1,7 +1,7 @@
 #pragma once
+#include <iostream>
 #include <unordered_set>
 #include <utility>
-#include <iostream>
 #include "common/shared_latch.h"
 #include "common/spin_latch.h"
 #include "common/strong_typedef.h"

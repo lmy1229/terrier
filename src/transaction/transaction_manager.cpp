@@ -1,7 +1,7 @@
 #include "transaction/transaction_manager.h"
 #include <algorithm>
-#include <utility>
 #include <limits>
+#include <utility>
 
 namespace terrier::transaction {
 TransactionContext *TransactionManager::BeginTransaction(TransactionThreadContext *thread_context) {
@@ -17,7 +17,7 @@ TransactionContext *TransactionManager::BeginTransaction(TransactionThreadContex
   // guarantee that the iterator or underlying pointer is stable across operations.
   // (That is, they may change as concurrent inserts and deletes happen)
   auto *const result =
-    new TransactionContext(start_time, start_time + INT64_MIN, buffer_pool_, log_manager_, thread_context);
+      new TransactionContext(start_time, start_time + INT64_MIN, buffer_pool_, log_manager_, thread_context);
 
   if (thread_context == nullptr) {
     common::SpinLatch::ScopedSpinLatch running_guard(&curr_running_txns_latch_);
@@ -200,7 +200,6 @@ timestamp_t TransactionManager::OldestTransactionStartTime() const {
 }
 
 TransactionQueue TransactionManager::CompletedTransactionsForGC() {
-
   TransactionQueue hand_to_gc;
   {
     // for txns that does not support thread context, or unregistered threads.

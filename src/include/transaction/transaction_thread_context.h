@@ -1,8 +1,8 @@
 #pragma once
-#include "transaction/transaction_defs.h"
-#include "common/spin_latch.h"
 #include <algorithm>
 #include <set>
+#include "common/spin_latch.h"
+#include "transaction/transaction_defs.h"
 
 namespace terrier::transaction {
 /**
