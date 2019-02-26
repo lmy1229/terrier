@@ -53,6 +53,7 @@ class TransactionThreadContext {
   }
 
   void MergeCompletedTransactions(TransactionQueue &queue) {
+    common::SpinLatch::ScopedSpinLatch guard(&thread_context_latch_);
     queue.splice_after(queue.cbefore_begin(), std::move(completed_txns_));
   }
 

@@ -1,6 +1,7 @@
 #pragma once
 #include <unordered_set>
 #include <utility>
+#include <iostream>
 #include "common/shared_latch.h"
 #include "common/spin_latch.h"
 #include "common/strong_typedef.h"
@@ -62,6 +63,7 @@ class TransactionManager {
     thread->MergeCompletedTransactions(completed_txns_);
     const size_t ret UNUSED_ATTRIBUTE = curr_workers_.erase(thread);
     TERRIER_ASSERT(ret == 1, "Unregistered thread does not exist in global thread table.");
+    delete thread;
   }
   /**
    * Begins a transaction.
