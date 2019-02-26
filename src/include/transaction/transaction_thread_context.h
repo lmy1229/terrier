@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <set>
+#include <utility>
 #include "common/spin_latch.h"
 #include "transaction/transaction_defs.h"
 
@@ -52,7 +53,7 @@ class TransactionThreadContext {
     completed_txns_.push_front(txn);
   }
 
-  void MergeCompletedTransactions(TransactionQueue &queue) {
+  void MergeCompletedTransactions(const TransactionQueue &queue) {
     common::SpinLatch::ScopedSpinLatch guard(&thread_context_latch_);
     queue.splice_after(queue.cbefore_begin(), std::move(completed_txns_));
   }
