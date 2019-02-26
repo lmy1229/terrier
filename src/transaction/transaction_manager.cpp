@@ -1,6 +1,7 @@
 #include "transaction/transaction_manager.h"
 #include <algorithm>
 #include <utility>
+#include <limits>
 
 namespace terrier::transaction {
 TransactionContext *TransactionManager::BeginTransaction(TransactionThreadContext *thread_context) {
@@ -16,10 +17,15 @@ TransactionContext *TransactionManager::BeginTransaction(TransactionThreadContex
   // guarantee that the iterator or underlying pointer is stable across operations.
   // (That is, they may change as concurrent inserts and deletes happen)
   auto *const result =
-      new TransactionContext(start_time, start_time + INT64_MIN, buffer_pool_, log_manager_, thread_context);
-  common::SpinLatch::ScopedSpinLatch running_guard(&curr_running_txns_latch_);
-  const auto ret UNUSED_ATTRIBUTE = curr_running_txns_.emplace(result->StartTime());
-  TERRIER_ASSERT(ret.second, "commit start time should be globally unique");
+    new TransactionContext(start_time, start_time + INT64_MIN, buffer_pool_, log_manager_, thread_context);
+
+  if (thread_context == nullptr) {
+    common::SpinLatch::ScopedSpinLatch running_guard(&curr_running_txns_latch_);
+    const auto ret UNUSED_ATTRIBUTE = curr_running_txns_.emplace(result->StartTime());
+    TERRIER_ASSERT(ret.second, "commit start time should be globally unique");
+  } else {
+    thread_context->startTransaction(start_time);
+  }
   return result;
 }
 
@@ -89,14 +95,22 @@ timestamp_t TransactionManager::Commit(TransactionContext *const txn, transactio
                                                        : UpdatingCommitCriticalSection(txn, callback, callback_arg);
   {
     // In a critical section, remove this transaction from the table of running transactions
-    common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+
+    TransactionThreadContext *worker_thread = txn->GetThreadContext();
     const timestamp_t start_time = txn->StartTime();
-    const size_t ret UNUSED_ATTRIBUTE = curr_running_txns_.erase(start_time);
-    TERRIER_ASSERT(ret == 1, "Committed transaction did not exist in global transactions table");
+    if (worker_thread == nullptr) {
+      // does not support per-thread data structure
+      common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+      const size_t ret UNUSED_ATTRIBUTE = curr_running_txns_.erase(start_time);
+      TERRIER_ASSERT(ret == 1, "Committed transaction did not exist in global transactions table");
+      if (gc_enabled_) completed_txns_.push_front(txn);
+    } else {
+      worker_thread->finishTransaction(start_time);
+      if (gc_enabled_) worker_thread->CompleteTransaction(txn);
+    }
     // It is not necessary to have to GC process read-only transactions, but it's probably faster to call free off
     // the critical path there anyway
     // Also note here that GC will figure out what varlen entries to GC, as opposed to in the abort case.
-    if (gc_enabled_) completed_txns_.push_front(txn);
   }
   return result;
 }
@@ -112,11 +126,21 @@ void TransactionManager::Abort(TransactionContext *const txn) {
   txn->log_processed_ = true;
   {
     // In a critical section, remove this transaction from the table of running transactions
-    common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+    TransactionThreadContext *worker_thread = txn->GetThreadContext();
     const timestamp_t start_time = txn->StartTime();
-    const size_t ret UNUSED_ATTRIBUTE = curr_running_txns_.erase(start_time);
-    TERRIER_ASSERT(ret == 1, "Aborted transaction did not exist in global transactions table");
-    if (gc_enabled_) completed_txns_.push_front(txn);
+    if (worker_thread == nullptr) {
+      // does not support per-thread data structure
+      common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+      const size_t ret UNUSED_ATTRIBUTE = curr_running_txns_.erase(start_time);
+      TERRIER_ASSERT(ret == 1, "Committed transaction did not exist in global transactions table");
+      if (gc_enabled_) completed_txns_.push_front(txn);
+    } else {
+      worker_thread->finishTransaction(start_time);
+      if (gc_enabled_) worker_thread->CompleteTransaction(txn);
+    }
+    // It is not necessary to have to GC process read-only transactions, but it's probably faster to call free off
+    // the critical path there anyway
+    // Also note here that GC will figure out what varlen entries to GC, as opposed to in the abort case.
   }
 }
 
@@ -155,16 +179,40 @@ void TransactionManager::GCLastUpdateOnAbort(TransactionContext *const txn) {
 }
 
 timestamp_t TransactionManager::OldestTransactionStartTime() const {
-  common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
-  const auto &oldest_txn = std::min_element(curr_running_txns_.cbegin(), curr_running_txns_.cend());
-  const timestamp_t result = (oldest_txn != curr_running_txns_.end()) ? *oldest_txn : time_.load();
+  timestamp_t default_time = time_.load();
+  timestamp_t result;
+  {
+    // for txns that does not support thread context
+    common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+    const auto &oldest_txn = std::min_element(curr_running_txns_.cbegin(), curr_running_txns_.cend());
+    result = (oldest_txn != curr_running_txns_.end()) ? *oldest_txn : time_.load();
+
+    // for txns that supports thread context
+    timestamp_t tmp;
+    for (auto worker : curr_workers_) {
+      tmp = worker->GetOldestTransactionIdOrDefault(default_time);
+      if (result > tmp) {
+        result = tmp;
+      }
+    }
+  }
   return result;
 }
 
 TransactionQueue TransactionManager::CompletedTransactionsForGC() {
-  common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
-  TransactionQueue hand_to_gc(std::move(completed_txns_));
-  TERRIER_ASSERT(completed_txns_.empty(), "TransactionManager's queue should now be empty.");
+
+  TransactionQueue hand_to_gc;
+  {
+    // for txns that does not support thread context, or unregistered threads.
+    common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+    hand_to_gc.splice_after(hand_to_gc.cbefore_begin(), std::move(completed_txns_));
+    TERRIER_ASSERT(completed_txns_.empty(), "TransactionManager's queue should now be empty.");
+
+    // for txns that supports thread context
+    for (auto worker : curr_workers_) {
+      worker->MergeCompletedTransactions(hand_to_gc);
+    }
+  }
   return hand_to_gc;
 }
 

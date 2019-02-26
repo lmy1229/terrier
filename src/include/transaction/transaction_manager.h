@@ -10,6 +10,7 @@
 #include "storage/write_ahead_log/log_manager.h"
 #include "transaction/transaction_context.h"
 #include "transaction/transaction_defs.h"
+#include "transaction/transaction_thread_context.h"
 
 namespace terrier::transaction {
 /**
@@ -40,7 +41,13 @@ class TransactionManager {
    */
   TransactionThreadContext *RegisterWorker(worker_id_t worker_id) {
     // TODO(Tianyu): Implement
-    return nullptr;
+    TransactionThreadContext *worker_context = new TransactionThreadContext(worker_id);
+
+    common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+    const auto ret UNUSED_ATTRIBUTE = curr_workers_.insert(worker_context);
+    TERRIER_ASSERT(ret.second, "Worker thead should be unique");
+
+    return worker_context;
   }
 
   /**
@@ -51,6 +58,10 @@ class TransactionManager {
    */
   void UnregisterWorker(TransactionThreadContext *thread) {
     // TODO(Tianyu): Implement
+    common::SpinLatch::ScopedSpinLatch guard(&curr_running_txns_latch_);
+    thread->MergeCompletedTransactions(completed_txns_);
+    const size_t ret UNUSED_ATTRIBUTE = curr_workers_.erase(thread);
+    TERRIER_ASSERT(ret == 1, "Unregistered thread does not exist in global thread table.");
   }
   /**
    * Begins a transaction.
@@ -110,6 +121,10 @@ class TransactionManager {
   // TODO(Matt): consider a different data structure if this becomes a measured bottleneck
   std::unordered_set<timestamp_t> curr_running_txns_;
   mutable common::SpinLatch curr_running_txns_latch_;
+
+  // added for project 1
+  std::unordered_set<TransactionThreadContext *> curr_workers_;
+  mutable common::SpinLatch curr_workers_latch_;
 
   bool gc_enabled_ = false;
   TransactionQueue completed_txns_;
